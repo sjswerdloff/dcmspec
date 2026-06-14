@@ -5,6 +5,7 @@ from IHE Technical Frameworks or Supplements, returning CSV data from tables in 
 """
 
 import os
+import re
 import logging
 from typing import Optional, List
 # BEGIN LEGACY SUPPORT: Remove for int progress callback deprecation
@@ -18,6 +19,14 @@ import camelot
 from dcmspec.config import Config
 from dcmspec.doc_handler import DocHandler
 from dcmspec.progress import ProgressObserver
+
+# A DICOM tag pattern like "(300A,0230)" appearing in a *header* cell is a strong
+# signal that a data (attribute) row was absorbed into the header — typically
+# because table_header_rowspan over-counts the header rows for a table.
+# select_tables uses this to fail loudly rather than silently drop the row, which
+# is unacceptable for conformance tooling.
+_DICOM_TAG_RE = re.compile(r"\(\s*[0-9A-Fa-f]{4}\s*,\s*[0-9A-Fa-f]{4}\s*\)")
+
 
 class PDFDocHandler(DocHandler):
     """Handler class for extracting tables from PDF documents.
@@ -317,6 +326,19 @@ class PDFDocHandler(DocHandler):
                         header_ = header_rows[0]
                     else:
                         header_ = merge_multirow_header(header_rows)
+                    # Fail loudly if a data row was absorbed into the header: a
+                    # DICOM tag pattern in a header cell means table_header_rowspan
+                    # likely over-counts the header rows for this table, which would
+                    # otherwise silently drop a real attribute row from the spec.
+                    for cell in header_:
+                        if cell and _DICOM_TAG_RE.search(str(cell)):
+                            raise ValueError(
+                                f"Header for table (page {page}, index {idx}) contains a "
+                                f"DICOM tag pattern in cell {cell!r}; a data row was likely "
+                                f"absorbed into the header. Check table_header_rowspan for "
+                                f"(page {page}, index {idx}) — it may exceed the actual "
+                                f"number of header rows."
+                            )
                     selected_tables.append({
                         "page": page,
                         "index": idx,
