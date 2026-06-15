@@ -267,6 +267,7 @@ class PDFDocHandler(DocHandler):
         tables: List[dict],
         table_indices: List[tuple],
         table_header_rowspan: Optional[dict] = None,
+        strict_header_check: bool = True,
     ) -> List[dict]:
         """Select tables referenced by table_indices and split each table into header and data.
 
@@ -280,6 +281,10 @@ class PDFDocHandler(DocHandler):
             table_indices (List[tuple]): List of (page, index) tuples specifying which tables to select and process.
             table_header_rowspan (dict, optional): Number of header rows (rowspan) for each table in table_indices,
                 keyed by (page, index). If not specified, defaults to 1 header row per table.
+            strict_header_check (bool): If True (default), raise ValueError when a header cell
+                contains a DICOM tag pattern — a sign that a data row was absorbed into the header
+                (usually a table_header_rowspan that over-counts the header rows). Set False to skip
+                the check for consumers that prefer the prior warn-and-continue behavior.
 
         Returns:
             List[dict]: List of dicts, each with keys:
@@ -289,7 +294,8 @@ class PDFDocHandler(DocHandler):
                 - 'data': list of data rows (list of cell values)
 
         Raises:
-            ValueError: If a header cell contains a DICOM tag pattern (e.g. "(300A,0230)"),
+            ValueError: If strict_header_check is True (default) and a header cell contains a DICOM
+                tag pattern (e.g. "(300A,0230)"),
                 indicating that a data row was absorbed into the header — typically because
                 table_header_rowspan over-counts the header rows for that table. Failing loudly
                 here prevents silently dropping a real attribute row from the specification.
@@ -336,15 +342,17 @@ class PDFDocHandler(DocHandler):
                     # DICOM tag pattern in a header cell means table_header_rowspan
                     # likely over-counts the header rows for this table, which would
                     # otherwise silently drop a real attribute row from the spec.
-                    for cell in header_:
-                        if cell and _DICOM_TAG_RE.search(str(cell)):
-                            raise ValueError(
-                                f"Header for table (page {page}, index {idx}) contains a "
-                                f"DICOM tag pattern in cell {cell!r}; a data row was likely "
-                                f"absorbed into the header. Check table_header_rowspan for "
-                                f"(page {page}, index {idx}) — it may exceed the actual "
-                                f"number of header rows."
-                            )
+                    # Opt out with strict_header_check=False to keep the prior behavior.
+                    if strict_header_check:
+                        for cell in header_:
+                            if cell and _DICOM_TAG_RE.search(str(cell)):
+                                raise ValueError(
+                                    f"Header for table (page {page}, index {idx}) contains a "
+                                    f"DICOM tag pattern in cell {cell!r}; a data row was likely "
+                                    f"absorbed into the header. Check table_header_rowspan for "
+                                    f"(page {page}, index {idx}) — it may exceed the actual "
+                                    f"number of header rows."
+                                )
                     selected_tables.append({
                         "page": page,
                         "index": idx,
