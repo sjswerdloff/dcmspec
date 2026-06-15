@@ -288,6 +288,12 @@ class PDFDocHandler(DocHandler):
                 - 'header': merged header row (list of column names)
                 - 'data': list of data rows (list of cell values)
 
+        Raises:
+            ValueError: If a header cell contains a DICOM tag pattern (e.g. "(300A,0230)"),
+                indicating that a data row was absorbed into the header — typically because
+                table_header_rowspan over-counts the header rows for that table. Failing loudly
+                here prevents silently dropping a real attribute row from the specification.
+
         Example:
             ```python
             selected_tables = handler.select_tables(
