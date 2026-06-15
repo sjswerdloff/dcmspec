@@ -336,6 +336,33 @@ def test_select_tables_raises_on_tag_in_header():
             table_header_rowspan={(35, 0): 2},
         )
 
+def test_select_tables_skips_guard_when_not_strict():
+    """strict_header_check=False opts out of the tag-in-header guard.
+
+    Same absorbed-header input as the strict test, but the consumer has opted out:
+    select_tables returns normally (the prior warn-and-continue behavior) instead of raising.
+    """
+    # Arrange
+    handler = make_handler()
+    rows = [
+        ["Attribute", "Tag", "Type", "Presence", "Specific Rules"],
+        ["Application Setup Sequence", "(300A,0230)", "1", "R+*", "Number of items shall be 1."],
+        [">Application Setup Type", "(300A,0232)", "1", "-*", ""],
+    ]
+    tables = [{"page": 35, "index": 0, "data": rows}]
+
+    # Act — opted out, so no raise
+    selected = handler.select_tables(
+        tables,
+        table_indices=[(35, 0)],
+        table_header_rowspan={(35, 0): 2},
+        strict_header_check=False,
+    )
+
+    # Assert
+    assert len(selected) == 1
+    assert selected[0]["page"] == 35
+
 def test_concat_tables_basic(monkeypatch, patch_dirs):
     """Test concat_tables concatenates tables with matching headers."""
     # Arrange
