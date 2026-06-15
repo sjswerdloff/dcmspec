@@ -1,0 +1,55 @@
+# Kindled-only CI. Lives ONLY on kindled-main — do NOT submit upstream.
+# David's test.yml (triggers on main/release) is left untouched; this file
+# runs the same suite for our integration branch.
+name: kindled-ci
+
+on:
+  push:
+    branches:
+      - kindled-main
+  pull_request:
+    branches:
+      - kindled-main
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}-latest
+    strategy:
+      matrix:
+        os: [Ubuntu]
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Get full Python version
+        id: full-python-version
+        shell: bash
+        run: |
+          python_version=$(python -c 'import sys; print("-".join(str(v) for v in sys.version_info))')
+          echo "version=$python_version" >> $GITHUB_OUTPUT
+          echo "Python version is $python_version"
+
+      - name: Setup Poetry
+        uses: pronovic/setup-poetry@v2
+        with:
+          version: "2.1.1"
+          cache-venv: "true"
+          cache-poetry: "true"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          poetry install --with dev
+          poetry run pip install ".[gui,pdf]"
+      - name: Run pytest
+        shell: bash
+        run: poetry run python -m pytest -v tests
