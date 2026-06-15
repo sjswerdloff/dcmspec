@@ -410,6 +410,51 @@ def test_concat_tables_header_mismatch(monkeypatch, caplog, patch_dirs):
     assert result["data"] == [["C", "D"], ["E", "F"]]
     assert "Header mismatch" in caplog.text
 
+def test_concat_tables_preserves_empty_string_cell(monkeypatch, patch_dirs):
+    """Test concat_tables keeps a blank-but-present ('') cell in its own column.
+
+    A cell that is the empty string "" (e.g. an attribute row with no DCM Type) must
+    NOT be dropped during realignment: doing so shifts every subsequent cell left by one,
+    silently moving a value (here an IHE-RO requirement code) into the wrong column.
+    This pins the fix for the IHE-RO empty-string column left-shift (TDRC-ION
+    setup_beams > Recorded Snout Sequence (3008,00F0)).
+    """
+    # Arrange
+    handler = make_handler()
+    tables = [
+        {
+            "page": 1, "index": 0,
+            "header": ["Attribute", "Tag", "DCM Type", "Type", "Attribute Note"],
+            # DCM Type is blank ("") and the requirement code "-" sits in the Type column.
+            "data": [["Recorded Snout Sequence", "(3008,00F0)", "", "-", ""]],
+        },
+    ]
+    # Act
+    result = handler.concat_tables(tables, table_id="t")
+    # Assert
+    assert result["header"] == ["Attribute", "Tag", "DCM Type", "Type", "Attribute Note"]
+    # "-" stays under "Type"; "DCM Type" stays blank — no left shift.
+    assert result["data"] == [["Recorded Snout Sequence", "(3008,00F0)", "", "-", ""]]
+
+def test_concat_tables_fills_none_gaps(monkeypatch, patch_dirs):
+    """Test concat_tables still slides cells left to fill genuine structural gaps (None).
+
+    pdfplumber emits None for merged/absent cells; those ARE removed so real values
+    fill the gap. This is the complement to empty-string preservation and guards that
+    the realignment intent is retained.
+    """
+    # Arrange
+    handler = make_handler()
+    tables = [
+        {"page": 1, "index": 0, "header": ["A", "B", "C"], "data": [["x", None, "y"]]},
+    ]
+    # Act
+    result = handler.concat_tables(tables, table_id="t")
+    # Assert
+    assert result["header"] == ["A", "B", "C"]
+    # None gap removed; "y" slides left to fill it; row padded back to header width.
+    assert result["data"] == [["x", "y", ""]]
+
 def test_extract_notes_basic(monkeypatch, patch_dirs):
     """Test extract_notes extracts notes from PDF text."""
     # Arrange
