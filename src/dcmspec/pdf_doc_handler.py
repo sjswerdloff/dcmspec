@@ -396,6 +396,56 @@ class PDFDocHandler(DocHandler):
                 row = (row + [""] * (n_columns - len(row)))[:n_columns]
                 grouped_table.append(row)
                 
+        # Split fused "frankenrow" rows back into their constituent attribute rows.
+        # pdfplumber's line-snapping (snap_tolerance) can merge two adjacent table rows
+        # whose separating rule falls within tolerance into a SINGLE row: every column's
+        # text becomes newline-joined across the source rows (e.g. tag
+        # "(300A,0214)\n(300A,0216)", type "1\n3", req "-*\n-"). A legitimate attribute
+        # row carries exactly ONE DICOM tag, so a tag cell holding N>=2 DICOM-tag
+        # patterns can ONLY be a fusion of N rows -- the mirror of the untagged
+        # continuation discriminator below. The split is applied ONLY when unambiguous:
+        # every structured column (every column except the description) must yield
+        # exactly N newline-parts, so part i of each column belongs to attribute i; the
+        # description must be blank or also yield exactly N parts. If any structured
+        # column does not align to N, splitting would risk mis-assigning a value across
+        # attributes, so the row is left intact and logged (the tag-in-header guard and
+        # downstream review still surface it). This never splits a legitimate single-tag
+        # row, because such a row has no multi-tag cell.
+        if len(header) >= 2:
+            tag_col = 1
+            desc_col = len(header) - 1
+            split_table = []
+            for row in grouped_table:
+                tag_cell = row[tag_col] if len(row) > tag_col else ""
+                tag_parts = str(tag_cell).split("\n") if tag_cell else []
+                # Fusion signal: 2+ newline-parts in the tag cell, EVERY part a DICOM tag.
+                n_tags = sum(1 for p in tag_parts if _DICOM_TAG_RE.fullmatch(p.strip()))
+                if len(tag_parts) >= 2 and n_tags == len(tag_parts):
+                    n = len(tag_parts)
+                    column_parts = []
+                    aligned = True
+                    for col_idx in range(len(row)):
+                        cell = row[col_idx]
+                        if col_idx == desc_col and (cell is None or not str(cell).strip()):
+                            # Blank description: replicate the blank for every split row.
+                            column_parts.append([cell if cell is not None else ""] * n)
+                            continue
+                        parts = str(cell).split("\n") if cell is not None else [""]
+                        if len(parts) != n:
+                            aligned = False
+                            break
+                        column_parts.append(parts)
+                    if aligned:
+                        for i in range(n):
+                            split_table.append([column_parts[c][i] for c in range(len(row))])
+                        continue
+                    self.logger.warning(
+                        f"Fused multi-tag row could not be cleanly split "
+                        f"(columns not aligned to {n} parts); leaving intact: {row!r}"
+                    )
+                split_table.append(row)
+            grouped_table = split_table
+
         # Merge untagged continuation rows into their owning (tagged) row.
         # pdfplumber emits a description-only row when a cell wraps across a page boundary:
         # the name column (col 0) and tag column (col 1) are empty/whitespace, but the last

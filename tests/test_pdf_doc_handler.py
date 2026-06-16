@@ -685,3 +685,124 @@ def test_concat_tables_continuation_merge_preserves_existing_empty_string_fix():
 
     assert result["header"] == ["Attribute", "Tag", "DCM Type", "Type", "Attribute Note"]
     assert result["data"] == [["Recorded Snout Sequence", "(3008,00F0)", "", "-", ""]]
+
+
+# --- Fused "frankenrow" split (mirror of the continuation merge) ----------------
+
+_IHE5_HEADER = ["Attribute Name", "Tag", "Type", "IHE-RO", "Attribute Description"]
+
+
+def _make_ihe5_tables(*page_groups):
+    """Build concat_tables input: one IHE-RO 5-column table dict per page group.
+
+    Each positional arg is a list of rows (each row a 5-cell list of
+    name, tag, type, ihe-ro requirement, description) representing one page's table.
+    """
+    return [
+        {"page": idx + 1, "index": 0, "header": list(_IHE5_HEADER), "data": [list(r) for r in rows]}
+        for idx, rows in enumerate(page_groups)
+    ]
+
+
+def test_concat_tables_fused_frankenrow_splits_into_two():
+    """Contract: a row whose tag cell holds two DICOM tags splits into two aligned rows.
+
+    Models the observed TPPC fusion of (300A,0214) Source Type and (300A,0216)
+    Source Manufacturer: every column newline-joins the two source rows; both
+    descriptions are blank. The split must recover two single-tag rows, value-aligned.
+    """
+    handler = make_handler()
+    fused = [">Source Type\n>Source Manufacturer", "(300A,0214)\n(300A,0216)", "1\n3", "-*\n-", ""]
+    result = handler.concat_tables(_make_ihe5_tables([fused]), table_id="t")
+
+    assert len(result["data"]) == 2, "Fused row must split into two attribute rows"
+    assert result["data"][0] == [">Source Type", "(300A,0214)", "1", "-*", ""]
+    assert result["data"][1] == [">Source Manufacturer", "(300A,0216)", "3", "-", ""]
+
+
+def test_concat_tables_fused_three_way_splits_into_three():
+    """Contract: the discriminator generalises to N>=2; a three-tag fusion yields three rows."""
+    handler = make_handler()
+    fused = [">A\n>B\n>C", "(1111,0001)\n(2222,0002)\n(3333,0003)", "1\n2\n3", "R\nO\n-", ""]
+    result = handler.concat_tables(_make_ihe5_tables([fused]), table_id="t")
+
+    assert len(result["data"]) == 3
+    assert [r[1] for r in result["data"]] == ["(1111,0001)", "(2222,0002)", "(3333,0003)"]
+    assert [r[2] for r in result["data"]] == ["1", "2", "3"]
+    assert [r[3] for r in result["data"]] == ["R", "O", "-"]
+
+
+def test_concat_tables_fused_splits_per_attribute_descriptions():
+    """Contract: a non-blank description that also splits into N parts aligns 1:1 with the tags."""
+    handler = make_handler()
+    fused = [">A\n>B", "(300A,0214)\n(300A,0216)", "1\n3", "-*\n-", "first desc\nsecond desc"]
+    result = handler.concat_tables(_make_ihe5_tables([fused]), table_id="t")
+
+    assert len(result["data"]) == 2
+    assert result["data"][0][4] == "first desc"
+    assert result["data"][1][4] == "second desc"
+
+
+def test_concat_tables_fused_not_split_when_structured_columns_misaligned(caplog):
+    """Fail-safe: if a structured column does not yield exactly N parts, leave the row intact.
+
+    Here the tag cell has two tags but the type cell has only one part, so the split
+    would be ambiguous. The row must NOT be split and a warning must be logged.
+    """
+    import logging
+
+    handler = make_handler()
+    fused = [">A\n>B", "(300A,0214)\n(300A,0216)", "1", "-*\n-", ""]  # type has 1 part, not 2
+    with caplog.at_level(logging.WARNING):
+        result = handler.concat_tables(_make_ihe5_tables([fused]), table_id="t")
+
+    assert len(result["data"]) == 1, "Misaligned fusion must be left intact, never split blindly"
+    assert result["data"][0][1] == "(300A,0214)\n(300A,0216)", "Tag cell stays fused when not splittable"
+    assert any("could not be cleanly split" in r.message for r in caplog.records)
+
+
+def test_concat_tables_fused_not_split_when_description_nonempty_misaligned():
+    """Fail-safe: a non-blank description with a different part-count than N blocks the split."""
+    handler = make_handler()
+    fused = [">A\n>B", "(300A,0214)\n(300A,0216)", "1\n3", "-*\n-", "one shared description"]
+    result = handler.concat_tables(_make_ihe5_tables([fused]), table_id="t")
+
+    assert len(result["data"]) == 1, "Ambiguous description must block the split"
+    assert result["data"][0][4] == "one shared description"
+
+
+def test_concat_tables_single_tag_row_never_split_despite_description_newline():
+    """Negative: a legitimate single-tag row is never split, even with newlines in its description."""
+    handler = make_handler()
+    row = [">A", "(300A,0214)", "1", "-*", "line one\nline two\nline three"]
+    result = handler.concat_tables(_make_ihe5_tables([row]), table_id="t")
+
+    assert len(result["data"]) == 1
+    assert result["data"][0][1] == "(300A,0214)"
+
+
+def test_concat_tables_tag_cell_with_nontag_part_not_treated_as_fusion():
+    """Negative: a tag cell with one DICOM tag plus non-tag text is not a fusion (not every part is a tag)."""
+    handler = make_handler()
+    row = [">A", "(300A,0214)\nsee note 2", "1", "-*", ""]
+    result = handler.concat_tables(_make_ihe5_tables([row]), table_id="t")
+
+    assert len(result["data"]) == 1, "Only all-DICOM-tag multi-part cells are fusions"
+    assert result["data"][0][1] == "(300A,0214)\nsee note 2"
+
+
+def test_concat_tables_fused_row_then_continuation_splits_then_merges():
+    """Interaction: split runs before merge, so a continuation after a fusion lands on the LAST split row.
+
+    The fused row becomes two rows; the trailing untagged continuation fragment then
+    merges into the immediately preceding (second) split row's description.
+    """
+    handler = make_handler()
+    fused = [">A\n>B", "(300A,0214)\n(300A,0216)", "1\n3", "-*\n-", ""]
+    continuation = ["", "", "", "", "continued requirement text"]
+    result = handler.concat_tables(_make_ihe5_tables([fused, continuation]), table_id="t")
+
+    assert len(result["data"]) == 2, "Two split rows; the continuation must not survive as its own row"
+    assert result["data"][0][1] == "(300A,0214)"
+    assert result["data"][1][1] == "(300A,0216)"
+    assert "continued requirement text" in result["data"][1][4]
