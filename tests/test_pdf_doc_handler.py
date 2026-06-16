@@ -30,7 +30,7 @@ def test_load_document_happy_path(monkeypatch, patch_dirs):
 
     monkeypatch.setattr("os.path.exists", lambda path: True)
     monkeypatch.setattr("pdfplumber.open", lambda path: dummy_pdf)
-    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn: dummy_tables)
+    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn, snap=None: dummy_tables)
     monkeypatch.setattr(handler, "concat_tables", lambda tables, table_id=None: dummy_concat)
 
     # Act
@@ -93,7 +93,7 @@ def test_load_document_download(monkeypatch, patch_dirs):
         "download",
         lambda url, cache_file_name, progress_observer=None, progress_callback=None: "test.pdf"
 )
-    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn: [])
+    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn, snap=None: [])
     monkeypatch.setattr(handler, "concat_tables", lambda tables, table_id=None, pad_columns=None: {})
 
     # Act
@@ -135,7 +135,7 @@ def test_load_document_missing_args(monkeypatch, patch_dirs):
     dummy_pdf.close = MagicMock()
     monkeypatch.setattr("os.path.exists", lambda path: True)
     monkeypatch.setattr("pdfplumber.open", lambda path: dummy_pdf)
-    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn: [])
+    monkeypatch.setattr(handler, "extract_tables_pdfplumber", lambda pdf, pn, snap=None: [])
     monkeypatch.setattr(handler, "concat_tables", lambda tables, table_id=None, pad_columns=None: {})
 
     # Act & Assert
@@ -244,6 +244,82 @@ def test_extract_tables_page_num_out_of_range(monkeypatch, patch_dirs):
     # Act & Assert
     with pytest.raises(IndexError, match="Page number 2 is out of range for this PDF"):
         handler.extract_tables_pdfplumber(dummy_pdf, [2])
+
+def test_extract_tables_default_snap_tolerance(patch_dirs):
+    """extract_tables_pdfplumber uses the default snap_tolerance (8) when no overrides are given."""
+    # Arrange
+    handler = make_handler()
+    dummy_pdf = MagicMock()
+    dummy_page = MagicMock()
+    dummy_pdf.pages = [dummy_page]
+    dummy_page.extract_tables.return_value = [[["A", "B"]]]
+    # Act
+    handler.extract_tables_pdfplumber(dummy_pdf, [1])
+    # Assert
+    settings = dummy_page.extract_tables.call_args.kwargs["table_settings"]
+    assert settings["snap_tolerance"] == 8
+
+
+def test_extract_tables_snap_tolerance_override_applies_per_page(patch_dirs):
+    """A per-page override changes snap_tolerance for that page only; others keep the default."""
+    # Arrange
+    handler = make_handler()
+    dummy_pdf = MagicMock()
+    page1 = MagicMock()
+    page2 = MagicMock()
+    page1.extract_tables.return_value = [[["A", "B"]]]
+    page2.extract_tables.return_value = [[["C", "D"]]]
+    dummy_pdf.pages = [page1, page2]
+    # Act: override page 2 only
+    handler.extract_tables_pdfplumber(dummy_pdf, [1, 2], snap_tolerance_overrides={2: 6})
+    # Assert: page 1 keeps default 8, page 2 uses the override 6
+    assert page1.extract_tables.call_args.kwargs["table_settings"]["snap_tolerance"] == 8
+    assert page2.extract_tables.call_args.kwargs["table_settings"]["snap_tolerance"] == 6
+
+
+def test_extract_tables_snap_tolerance_override_none_is_default(patch_dirs):
+    """Passing None for overrides is equivalent to no overrides (default 8 everywhere)."""
+    # Arrange
+    handler = make_handler()
+    dummy_pdf = MagicMock()
+    dummy_page = MagicMock()
+    dummy_pdf.pages = [dummy_page]
+    dummy_page.extract_tables.return_value = [[["A", "B"]]]
+    # Act
+    handler.extract_tables_pdfplumber(dummy_pdf, [1], snap_tolerance_overrides=None)
+    # Assert
+    assert dummy_page.extract_tables.call_args.kwargs["table_settings"]["snap_tolerance"] == 8
+
+
+def test_load_document_forwards_snap_tolerance_overrides(monkeypatch, patch_dirs):
+    """load_document forwards snap_tolerance_overrides through to extract_tables_pdfplumber."""
+    # Arrange
+    handler = make_handler()
+    dummy_pdf = MagicMock()
+    dummy_pdf.pages = [MagicMock()]
+    dummy_pdf.close = MagicMock()
+    dummy_tables = [{"page": 1, "index": 0, "header": ["A", "B"], "data": [["C", "D"]]}]
+    captured = {}
+
+    def fake_extract(pdf, pn, snap=None):
+        captured["snap"] = snap
+        return dummy_tables
+
+    monkeypatch.setattr("os.path.exists", lambda path: True)
+    monkeypatch.setattr("pdfplumber.open", lambda path: dummy_pdf)
+    monkeypatch.setattr(handler, "extract_tables_pdfplumber", fake_extract)
+    monkeypatch.setattr(handler, "concat_tables", lambda tables, table_id=None: {"header": [], "data": []})
+    # Act
+    handler.load_document(
+        cache_file_name="dummy.pdf",
+        page_numbers=[1],
+        table_indices=[(1, 0)],
+        table_id="t",
+        snap_tolerance_overrides={1: 6},
+    )
+    # Assert
+    assert captured["snap"] == {1: 6}
+
 
 def test_select_tables_single_row_header():
     """Test select_tables with a single header row (rowspan=1)."""
