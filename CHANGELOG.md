@@ -7,6 +7,7 @@ These release notes summarize key changes, improvements, and breaking updates fo
 ### Fixed
 
 - `PDFDocHandler.concat_tables` now reconstructs page-straddling description cells. When an attribute's description wraps across a PDF page boundary, pdfplumber emits the continuation as an untagged row (empty name and tag, description only) atop the next page's table; this is now merged into the preceding tagged row's description instead of becoming a floating node. Recovers enum values and conditional requirements that were silently lost at page breaks (e.g. HDSS Contour Geometric Type `(3006,0042)` losing its `POINT` / `CLOSED_PLANAR` / `CLOSEDPLANAR_XOR` enumeration).
+- `PDFDocHandler.concat_tables` now splits fused "frankenrow" rows back into their constituent attribute rows. pdfplumber's line-snapping can merge two adjacent table rows whose separating rule falls within `snap_tolerance` into one row, newline-joining every column (e.g. tag `(300A,0214)\n(300A,0216)`, type `1\n3`). A legitimate attribute row carries exactly one DICOM tag, so a tag cell holding N≥2 DICOM-tag patterns is unambiguously a fusion; the row is split into N rows **only** when every structured column yields exactly N aligned newline-parts (the description must be blank or also N parts), otherwise it is left intact and logged. Mirrors the continuation-merge discriminator and recovers attributes (e.g. TPPC-Brachy `(300A,0214)` Source Type / `(300A,0216)` Source Manufacturer) that were fused into a single malformed node.
 
 ## [0.3.0] - 2025-11-27
 
