@@ -531,3 +531,157 @@ def test_extract_notes_interrupted_by_headers_footers(monkeypatch, patch_dirs):
     assert "Footer" not in result["Note 2:"]["text"]
     assert "End of Notes" not in result["Note 2:"]["text"]
 
+
+
+_IHE_HEADER = ["Attribute Name", "Tag", "Type", "Attribute Description"]
+
+
+def _make_ihe_tables(*page_groups):
+    """Build concat_tables input: one IHE-RO 4-column table dict per page group.
+
+    Each positional arg is a list of rows (each row a 4-cell list of
+    name, tag, type, description) representing one page's extracted table.
+    """
+    return [
+        {"page": idx + 1, "index": 0, "header": list(_IHE_HEADER), "data": [list(r) for r in rows]}
+        for idx, rows in enumerate(page_groups)
+    ]
+
+
+def test_concat_tables_single_continuation_merges_description():
+    """Contract: a single orphan fragment merges into the prior tagged row's description.
+
+    The fragment row must be absent from the result; the owning row's description
+    must contain both the original text and the continuation text.
+    """
+    handler = make_handler()
+    owning_row = [
+        ">>Contour Geometric Type",
+        "(3006,0042)",
+        "1",
+        "Geometric type of contour. See DICOM Standard,\nPS3.3, Section C.8.8.6.1.",
+    ]
+    fragment_row = ["", "", "", "Shall be of value\nPOINT single point\nCLOSED_PLANAR ..."]
+
+    tables = _make_ihe_tables([owning_row], [fragment_row])
+    result = handler.concat_tables(tables, table_id="t")
+
+    # Fragment row must be gone — only one data row remains
+    assert len(result["data"]) == 1, "Fragment row must be absorbed; only the owning row should remain"
+
+    description = result["data"][0][3]
+    assert "Geometric type of contour" in description
+    assert "CLOSED_PLANAR" in description
+    assert "POINT single point" in description
+
+
+def test_concat_tables_multiple_consecutive_fragments_all_merge():
+    """Contract: multiple consecutive fragment rows all accumulate onto the same owning row.
+
+    Each fragment's description is appended in order; the owning row's description
+    contains all parts; all fragment rows are gone from the result.
+    """
+    handler = make_handler()
+    owning_row = ["Beam Sequence", "(300A,00B0)", "1", "Sequence of treatment beams."]
+    fragment1 = ["", "", "", "Each beam defines one irradiation."]
+    fragment2 = ["", "", "", "Required if RT Plan is for external beam."]
+
+    tables = _make_ihe_tables([owning_row, fragment1, fragment2])
+    result = handler.concat_tables(tables, table_id="t")
+
+    assert len(result["data"]) == 1, "Both fragments must be absorbed; one owning row expected"
+
+    description = result["data"][0][3]
+    assert "Sequence of treatment beams" in description
+    assert "Each beam defines one irradiation" in description
+    assert "Required if RT Plan is for external beam" in description
+
+
+def test_concat_tables_zero_orphans_postcondition():
+    """Acceptance test: after concat_tables, no data row has empty name AND empty tag AND non-empty description.
+
+    This is the key post-condition that the merge step must guarantee.  Any row
+    that passes this discriminator in the result is a silently-lost orphan fragment.
+    """
+    handler = make_handler()
+    # Mix of normal rows and fragments spread across two pages
+    page1_rows = [
+        ["Contour Sequence", "(3006,0040)", "1C", "Sequence of contours."],
+        [">>Contour Geometric Type", "(3006,0042)", "1", "Geometric type."],
+        ["", "", "", "Continuation of geometric type description."],
+    ]
+    page2_rows = [
+        [">Referenced ROI Number", "(3006,0084)", "1", "References the ROI."],
+        ["", "", "", "Must be unique within the structure set."],
+        ["Observation Label", "(3006,0085)", "3", "User-defined label."],
+    ]
+    tables = _make_ihe_tables(page1_rows, page2_rows)
+    result = handler.concat_tables(tables, table_id="t")
+
+    for row in result["data"]:
+        name = row[0] if row else ""
+        tag = row[1] if len(row) > 1 else ""
+        desc = row[3] if len(row) > 3 else ""
+        name_empty = not (name and str(name).strip())
+        tag_empty = not (tag and str(tag).strip())
+        desc_nonempty = bool(desc and str(desc).strip())
+        assert not (name_empty and tag_empty and desc_nonempty), f"Orphan fragment survived in result: {row!r}"
+
+
+def test_concat_tables_include_table_row_not_treated_as_fragment():
+    """Contract: an '>>>Include Table N-N' row (has a name, no tag) is NOT merged as a fragment.
+
+    Such rows are directives, not continuations.  The discriminator requires BOTH
+    name AND tag to be empty; a named-but-untagged row must pass through unchanged.
+    """
+    handler = make_handler()
+    include_row = [">>>Include Table 10-3", "", "", ""]
+    next_attr = ["Beam Meterset", "(300A,0086)", "1", "Machine setting."]
+
+    tables = _make_ihe_tables([include_row, next_attr])
+    result = handler.concat_tables(tables, table_id="t")
+
+    assert len(result["data"]) == 2, "Include-table row must not be merged/dropped"
+    # The include row must still be first
+    assert "Include Table 10-3" in result["data"][0][0]
+
+
+def test_concat_tables_fragment_as_first_row_left_in_place(caplog):
+    """Contract: a fragment that has no preceding tagged row is left in place with a warning.
+
+    This is an anomalous edge case (a fragment at the very start of the data).
+    The guard must not merge it (there is nothing to merge into) and must log a warning.
+    """
+    handler = make_handler()
+    fragment_row = ["", "", "", "Orphaned continuation with no owner."]
+
+    tables = _make_ihe_tables([fragment_row])
+    caplog.set_level(logging.WARNING)
+    result = handler.concat_tables(tables, table_id="t")
+
+    # Row must survive (not silently vanish)
+    assert len(result["data"]) == 1
+    assert "warning" in caplog.text.lower() or "Warning" in caplog.text or "Untagged continuation" in caplog.text
+
+
+def test_concat_tables_continuation_merge_preserves_existing_empty_string_fix():
+    """Regression: the empty-string ('') blank-cell preservation still works after adding merge logic.
+
+    A cell that is the empty string "" (e.g. no DCM Type) must NOT be dropped during
+    realignment — doing so shifts every subsequent cell left by one.  This test mirrors
+    test_concat_tables_preserves_empty_string_cell to confirm the cherry-picked fix survives
+    the new merge step.
+    """
+    handler = make_handler()
+    tables = [
+        {
+            "page": 1,
+            "index": 0,
+            "header": ["Attribute", "Tag", "DCM Type", "Type", "Attribute Note"],
+            "data": [["Recorded Snout Sequence", "(3008,00F0)", "", "-", ""]],
+        },
+    ]
+    result = handler.concat_tables(tables, table_id="t")
+
+    assert result["header"] == ["Attribute", "Tag", "DCM Type", "Type", "Attribute Note"]
+    assert result["data"] == [["Recorded Snout Sequence", "(3008,00F0)", "", "-", ""]]

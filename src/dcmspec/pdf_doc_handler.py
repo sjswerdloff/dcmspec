@@ -396,6 +396,43 @@ class PDFDocHandler(DocHandler):
                 row = (row + [""] * (n_columns - len(row)))[:n_columns]
                 grouped_table.append(row)
                 
+        # Merge untagged continuation rows into their owning (tagged) row.
+        # pdfplumber emits a description-only row when a cell wraps across a page boundary:
+        # the name column (col 0) and tag column (col 1) are empty/whitespace, but the last
+        # column (description) carries the continuation text. These orphan rows must be
+        # appended to the immediately preceding tagged row's description and then dropped;
+        # otherwise enum values and required descriptions are silently lost.
+        # Discriminator: empty name AND empty tag AND non-empty description. This is safe
+        # because new attributes carry a tag, "Include Table" rows carry a name, and a new
+        # section always begins with a tagged row, so (empty-name, empty-tag) can ONLY be a
+        # continuation fragment, never the start of a distinct entry.
+        if len(header) >= 2:  # need at least name and tag columns to apply the discriminator
+            desc_col = len(header) - 1  # description is always the last column
+            merged_table = []
+            for row in grouped_table:
+                name_cell = row[0] if row else ""
+                tag_cell = row[1] if len(row) > 1 else ""
+                desc_cell = row[desc_col] if len(row) > desc_col else ""
+                name_empty = not (name_cell and str(name_cell).strip())
+                tag_empty = not (tag_cell and str(tag_cell).strip())
+                desc_nonempty = bool(desc_cell and str(desc_cell).strip())
+                if name_empty and tag_empty and desc_nonempty:
+                    # Continuation fragment: append its description onto the owning row.
+                    if merged_table:
+                        owner = merged_table[-1]
+                        owner_desc = owner[desc_col] if len(owner) > desc_col else ""
+                        separator = "\n" if owner_desc and not owner_desc.endswith("\n") else ""
+                        owner[desc_col] = owner_desc + separator + str(desc_cell)
+                    else:
+                        # No preceding tagged row: anomalous; leave in place and log.
+                        self.logger.warning(
+                            f"Untagged continuation row found with no preceding tagged row; leaving in place: {row!r}"
+                        )
+                        merged_table.append(row)
+                else:
+                    merged_table.append(row)
+            grouped_table = merged_table
+
         # Realign columns: drop only structural gaps (None) so non-empty cells slide left
         # to fill them. A cell that is the empty STRING ("") is a blank-but-present column
         # (e.g. an attribute with no DCM Type) and MUST be preserved as a positional holder.
