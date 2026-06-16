@@ -2,6 +2,12 @@
 
 These release notes summarize key changes, improvements, and breaking updates for each version of **dcmspec**.
 
+## [Unreleased]
+
+### Fixed
+
+- `PDFDocHandler.concat_tables` now reconstructs page-straddling description cells. When an attribute's description wraps across a PDF page boundary, pdfplumber emits the continuation as an untagged row (empty name and tag, description only) atop the next page's table; this is now merged into the preceding tagged row's description instead of becoming a floating node. Recovers enum values and conditional requirements that were silently lost at page breaks (e.g. HDSS Contour Geometric Type `(3006,0042)` losing its `POINT` / `CLOSED_PLANAR` / `CLOSEDPLANAR_XOR` enumeration).
+
 ## [0.3.0] - 2025-11-27
 
 ### Added
