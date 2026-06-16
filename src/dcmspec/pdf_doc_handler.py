@@ -396,9 +396,15 @@ class PDFDocHandler(DocHandler):
                 row = (row + [""] * (n_columns - len(row)))[:n_columns]
                 grouped_table.append(row)
                 
-        # Realign columns: shift non-empty header cells and data cells left to fill gaps ---
+        # Realign columns: drop only structural gaps (None) so non-empty cells slide left
+        # to fill them. A cell that is the empty STRING ("") is a blank-but-present column
+        # (e.g. an attribute with no DCM Type) and MUST be preserved as a positional holder.
+        # Removing "" here shifts every subsequent cell left by one, silently moving a value
+        # (e.g. an IHE-RO requirement code) into the wrong column — unacceptable for
+        # conformance tooling. pdfplumber emits None for merged/absent cells and "" for a
+        # present-but-empty cell, so keying realignment on None alone is the correct distinction.
         def shift_row_left(row):
-            new_row = [cell for cell in row if cell not in (None, "")]
+            new_row = [cell for cell in row if cell is not None]
             new_row += [""] * (len(row) - len(new_row))
             return new_row
 
