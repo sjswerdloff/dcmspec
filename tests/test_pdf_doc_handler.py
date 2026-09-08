@@ -911,3 +911,82 @@ def test_concat_tables_fused_row_then_continuation_splits_then_merges():
     assert result["data"][0][1] == "(300A,0214)"
     assert result["data"][1][1] == "(300A,0216)"
     assert "continued requirement text" in result["data"][1][4]
+
+
+def test_concat_tables_narrow_first_does_not_truncate_a_wider_table(monkeypatch, patch_dirs):
+    """A narrower table listed FIRST must not truncate every later, wider table.
+
+    Regression for The_Kindled/sjsts_ihero_test_tools#192. Values are the measured
+    IHE-RO TDRC ones: RT Beams Session Record spans pages 27 and 28 as one module.
+    pdfplumber collapses page 27's Attribute Note column out of existence because all
+    of its cells are empty, so (27,1) extracts as 3 columns while (28,0) extracts as 4.
+    Taking the column count from the FIRST header truncated every page-28 row to three
+    cells, discarding the constraint text a validator exists to enforce -- while names,
+    tags and requirement codes all survived, so every count-based check still passed.
+    """
+    # Arrange
+    handler = make_handler()
+    note = "Shall have one item included in this sequence for each beam delivered"
+    tables = [
+        {"page": 27, "index": 1, "header": ["Attribute", "Tag", "Type"],
+         "data": [["Referenced Fraction Group Number", "(300C,0022)", "-"]]},
+        {"page": 28, "index": 0, "header": ["Attribute", "Tag", "Type", "Attribute Note"],
+         "data": [["Treatment Session Beam Sequence", "(3008,0020)", "R+*", note]]},
+    ]
+    table_indices = [(27, 1), (28, 0)]
+    # Act
+    result = handler.concat_tables(tables, table_indices)
+    # Assert
+    assert result["header"] == ["Attribute", "Tag", "Type", "Attribute Note"]
+    assert result["data"] == [
+        ["Referenced Fraction Group Number", "(300C,0022)", "-", ""],
+        ["Treatment Session Beam Sequence", "(3008,0020)", "R+*", note],
+    ]
+
+
+def test_concat_tables_widest_header_does_not_reorder_rows(monkeypatch, patch_dirs):
+    """Widening the reference header must not reorder rows into widest-first order.
+
+    Reordering the tables so the widest is processed first also recovers the lost
+    column, and is NOT an acceptable fix: these tables are one module split across a
+    page break, and the depth markers on the later page inherit their nesting from the
+    last row of the earlier one. Document order is load-bearing, so this asserts it
+    directly rather than leaving it implied by the test above.
+    """
+    # Arrange
+    handler = make_handler()
+    tables = [
+        {"page": 1, "index": 0, "header": ["A", "B", "C"], "data": [["first", "", ""]]},
+        {"page": 2, "index": 0, "header": ["A", "B", "C", "D"], "data": [["second", "", "", "kept"]]},
+        {"page": 3, "index": 0, "header": ["A", "B", "C"], "data": [["third", "", ""]]},
+    ]
+    table_indices = [(1, 0), (2, 0), (3, 0)]
+    # Act
+    result = handler.concat_tables(tables, table_indices)
+    # Assert
+    assert [row[0] for row in result["data"]] == ["first", "second", "third"]
+    assert result["data"][1][3] == "kept"
+
+
+def test_concat_tables_warns_when_a_narrower_header_is_not_a_prefix(monkeypatch, caplog, patch_dirs):
+    """Padding a narrower table on the RIGHT is only correct if its header is a prefix.
+
+    For TDRC it is measured to be one: ['Attribute','Tag','Type'] are the first three
+    of ['Attribute','Tag','Type','Attribute Note']. Where that does not hold, padding
+    puts values under the wrong headings -- the same class of silent misassignment as
+    the truncation this replaces -- so it must be announced rather than assumed.
+    """
+    # Arrange
+    handler = make_handler()
+    tables = [
+        {"page": 1, "index": 0, "header": ["Attribute", "Attribute Note"], "data": [["x", "y"]]},
+        {"page": 2, "index": 0, "header": ["Attribute", "Tag", "Type", "Attribute Note"],
+         "data": [["a", "b", "c", "d"]]},
+    ]
+    table_indices = [(1, 0), (2, 0)]
+    # Act
+    with caplog.at_level("WARNING"):
+        handler.concat_tables(tables, table_indices)
+    # Assert
+    assert any("not a prefix" in r.message for r in caplog.records), caplog.text
+    assert any("page 1" in r.message and "index 0" in r.message for r in caplog.records), caplog.text

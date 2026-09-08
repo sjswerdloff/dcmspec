@@ -541,27 +541,53 @@ class PDFDocHandler(DocHandler):
             table_id (str, optional): An identifier for the concatenated table.
 
         Returns:
-            dict: A dict with keys 'table_id' (if provided), 'header' (from the first table), 
+            dict: A dict with keys 'table_id' (if provided), 'header' (the widest of the tables' headers), 
             and 'data' (the concatenated table as a list of rows).
 
         """
+        # The reference header is the WIDEST of the tables' headers, not the first one.
+        # A single logical module split across a page break can extract with different
+        # column counts per page: pdfplumber collapses a column out of existence rather
+        # than emitting blank cells when every one of its cells on that page is empty.
+        # Taking the column count from the FIRST header made a narrow page authoritative
+        # and the slice below then TRUNCATED every row of every wider table, discarding
+        # its last column outright. Names, tags and requirement codes all survived, so
+        # every count-based check on the result still passed while the constraint text
+        # a validator exists to enforce was gone. Rows are padded to the widest header
+        # and never truncated here. See The_Kindled/sjsts_ihero_test_tools#192.
+        headers = [table.get("header", []) for table in tables]
+        n_columns = max((len(header_) for header_ in headers), default=0)
+        header = next((header_ for header_ in headers if len(header_) == n_columns), [])
+
         grouped_table = []
-        header = []
-        first = True
         for table in tables:
             header_ = table.get("header", [])
-            if first:
-                header = header_
-                first = False
-            elif header and header_ != header:
-                self.logger.warning(
-                    f"Header mismatch in concatenated tables: {header} != {header_} "
-                    f"(page {table['page']}, index {table['index']})"
-                )
-            n_columns = len(header)
+            if header_ and header_ != header:
+                if len(header_) == n_columns:
+                    self.logger.warning(
+                        f"Header mismatch in concatenated tables: {header} != {header_} "
+                        f"(page {table['page']}, index {table['index']})"
+                    )
+                elif header_ == header[: len(header_)]:
+                    # Narrower AND a positional prefix: padding on the right is correct,
+                    # the missing columns genuinely have no value on this page.
+                    self.logger.info(
+                        f"Padding narrower table to the widest header: {header_} -> {header} "
+                        f"(page {table['page']}, index {table['index']})"
+                    )
+                else:
+                    # Narrower and NOT a prefix. Padding on the right would put values
+                    # under the wrong headings -- the same silent misassignment as the
+                    # truncation this replaces, so it is announced rather than assumed.
+                    self.logger.warning(
+                        f"Narrower header is not a prefix of the widest header, so padding on "
+                        f"the right may put values under the wrong headings: {header_} is not a "
+                        f"prefix of {header} (page {table['page']}, index {table['index']})"
+                    )
             for row in table["data"]:
-                # Always pad/truncate to header length
-                row = (row + [""] * (n_columns - len(row)))[:n_columns]
+                # Pad short rows only. A row longer than the header is left alone here and
+                # projected down by columns_to_keep below, so nothing needs truncating.
+                row = row + [""] * (n_columns - len(row))
                 grouped_table.append(row)
                 
         # Reconstruct page-seam extraction artifacts before realignment: split fused
