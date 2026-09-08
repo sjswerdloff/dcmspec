@@ -86,7 +86,14 @@ def _split_fused_rows(grouped_table: List, header: List, logger: logging.Logger)
     layout simply never matches the all-DICOM-tag signal, so it is not mis-processed.
 
     Args:
-        grouped_table (List): The concatenated rows (each already padded to ``len(header)``).
+        grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
+            but a row WIDER than the header is passed through unchanged: ``concat_tables`` takes
+            the WIDEST header and pads short rows only, no longer truncating a wider row HERE
+            (The_Kindled/sjsts_ihero_test_tools#192). So a row reaching this helper may exceed
+            ``len(header)``, and the ``len(header)``-derived indices below address header-relative
+            positions rather than the row's trailing cells. Those trailing cells do not outlive
+            ``concat_tables``: its closing projection keeps only the columns of ``header``, so a
+            surplus cell is dropped there -- silently, and after this helper has run.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the leave-intact warning.
 
@@ -147,7 +154,14 @@ def _merge_continuations(grouped_table: List, header: List, logger: logging.Logg
     count as empty.
 
     Args:
-        grouped_table (List): The concatenated rows (each already padded to ``len(header)``).
+        grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
+            but a row WIDER than the header is passed through unchanged: ``concat_tables`` takes
+            the WIDEST header and pads short rows only, no longer truncating a wider row HERE
+            (The_Kindled/sjsts_ihero_test_tools#192). So a row reaching this helper may exceed
+            ``len(header)``, and the ``len(header)``-derived indices below address header-relative
+            positions rather than the row's trailing cells. Those trailing cells do not outlive
+            ``concat_tables``: its closing projection keeps only the columns of ``header``, so a
+            surplus cell is dropped there -- silently, and after this helper has run.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the orphaned-fragment warning.
 
