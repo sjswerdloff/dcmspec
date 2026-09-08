@@ -87,10 +87,11 @@ def _split_fused_rows(grouped_table: List, header: List, logger: logging.Logger)
 
     Args:
         grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
-            but a row WIDER than the header is passed through unchanged by ``concat_tables``
-            (it pads short rows only, since sjsts #192 stopped it truncating wider tables). So a
-            row here may exceed ``len(header)``, and the ``len(header)``-derived indices below
-            address header-relative positions, not the row's trailing cells.
+            but a row WIDER than the header is passed through unchanged: ``concat_tables`` takes
+            the WIDEST header and pads short rows only, no longer truncating wider tables
+            (The_Kindled/sjsts_ihero_test_tools#192). So a row here may exceed ``len(header)``,
+            and the ``len(header)``-derived indices below address header-relative positions
+            rather than the row's trailing cells.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the leave-intact warning.
 
@@ -152,10 +153,11 @@ def _merge_continuations(grouped_table: List, header: List, logger: logging.Logg
 
     Args:
         grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
-            but a row WIDER than the header is passed through unchanged by ``concat_tables``
-            (it pads short rows only, since sjsts #192 stopped it truncating wider tables). So a
-            row here may exceed ``len(header)``, and the ``len(header)``-derived indices below
-            address header-relative positions, not the row's trailing cells.
+            but a row WIDER than the header is passed through unchanged: ``concat_tables`` takes
+            the WIDEST header and pads short rows only, no longer truncating wider tables
+            (The_Kindled/sjsts_ihero_test_tools#192). So a row here may exceed ``len(header)``,
+            and the ``len(header)``-derived indices below address header-relative positions
+            rather than the row's trailing cells.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the orphaned-fragment warning.
 
