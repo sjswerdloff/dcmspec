@@ -86,7 +86,11 @@ def _split_fused_rows(grouped_table: List, header: List, logger: logging.Logger)
     layout simply never matches the all-DICOM-tag signal, so it is not mis-processed.
 
     Args:
-        grouped_table (List): The concatenated rows (each already padded to ``len(header)``).
+        grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
+            but a row WIDER than the header is passed through unchanged by ``concat_tables``
+            (it pads short rows only, since sjsts #192 stopped it truncating wider tables). So a
+            row here may exceed ``len(header)``, and the ``len(header)``-derived indices below
+            address header-relative positions, not the row's trailing cells.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the leave-intact warning.
 
@@ -147,7 +151,11 @@ def _merge_continuations(grouped_table: List, header: List, logger: logging.Logg
     count as empty.
 
     Args:
-        grouped_table (List): The concatenated rows (each already padded to ``len(header)``).
+        grouped_table (List): The concatenated rows. Each row is padded UP TO ``len(header)``,
+            but a row WIDER than the header is passed through unchanged by ``concat_tables``
+            (it pads short rows only, since sjsts #192 stopped it truncating wider tables). So a
+            row here may exceed ``len(header)``, and the ``len(header)``-derived indices below
+            address header-relative positions, not the row's trailing cells.
         header (List): The merged header row (col 0 name, col 1 tag, last col description).
         logger (logging.Logger): Logger for the orphaned-fragment warning.
 
